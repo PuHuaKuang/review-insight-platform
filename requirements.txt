@@ -1,0 +1,23 @@
+# 运行环境：Python 3.11+（本项目在 3.13 验证）
+# 安装：pip install -r requirements.txt
+
+# --- Web 服务 ---
+fastapi==0.115.6
+uvicorn==0.34.0
+jinja2==3.1.5
+
+# --- 数据层 ---
+SQLAlchemy==2.0.36
+alembic==1.14.0
+# 切换 Postgres 时安装（连接串示例见 README）
+# psycopg2-binary==2.9.10
+
+# --- 采集：Google Play 批量报告（GCS 为主通道） ---
+google-cloud-storage==2.18.2
+
+# --- 采集：Reviews API（辅助通道，仅内容与早期信号） ---
+google-auth==2.35.0
+google-api-python-client==2.149.0
+
+# --- OAuth：人类账号授权（GCS 服务账号不可用时的备选） ---
+google-auth-oauthlib==1.4.1

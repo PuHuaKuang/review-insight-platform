@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>登录 · 用户评价观测平台</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">用户评价观测 <span>Platform</span></div>
+</header>
+<main>
+  <div style="max-width:360px;margin:64px auto">
+    <div class="panel">
+      <h3>登录</h3>
+      <form onsubmit="return false;" style="display:flex;flex-direction:column;gap:12px">
+        <div class="field"><label>用户名</label><input id="u" autocomplete="username" autofocus></div>
+        <div class="field"><label>口令</label><input id="p" type="password" autocomplete="current-password"></div>
+        <div id="err" style="color:var(--red);font-size:13px;min-height:20px"></div>
+        <button onclick="doLogin()">登录</button>
+      </form>
+    </div>
+    <div class="muted" style="margin-top:12px;font-size:12px">
+      口令通过环境变量配置，不存储在代码或数据库中。
+    </div>
+  </div>
+</main>
+<script>
+async function doLogin() {
+  const err = document.getElementById('err');
+  err.textContent = '';
+  const r = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: document.getElementById('u').value,
+      password: document.getElementById('p').value,
+    }),
+  });
+  if (r.ok) {
+    location.href = '/';
+  } else {
+    const d = await r.json().catch(() => ({}));
+    err.textContent = d.detail || '登录失败';
+  }
+}
+document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+</script>
+</body>
+</html>

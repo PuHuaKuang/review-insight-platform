@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}用户评价观测平台{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/app.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand">用户评价观测 <span>Platform</span></div>
+  <nav>
+    <a href="/" class="{% if page == 'dashboard' %}active{% endif %}">监控大盘</a>
+    <a href="/analysis" class="{% if page == 'analysis' %}active{% endif %}">分析工作台</a>
+    <a href="/alerts" class="{% if page == 'alerts' %}active{% endif %}">告警中心</a>
+    <a href="/admin" class="{% if page == 'admin' %}active{% endif %}">数据管理</a>
+  </nav>
+  <div class="user-chip" style="margin-left:auto">
+    <span class="muted">{{ package }}</span>
+    <button onclick="logout()">退出</button>
+  </div>
+</header>
+<main>
+<div id="globalError"></div>
+{% block content %}{% endblock %}
+</main>
+<footer>数据源：Google Play 批量报告（全量口径） · 比例类指标不混用 Reviews API 样本</footer>
+{% block scripts %}{% endblock %}
+</body>
+</html>

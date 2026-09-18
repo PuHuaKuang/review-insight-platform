@@ -1,0 +1,206 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="fresh" class="note">正在加载数据…</div>
+
+<div class="panel verdict" id="verdictCard"></div>
+
+<div class="cards" id="cards"></div>
+
+<div class="panel">
+  <h3>差评率趋势 <small>按月 · 全量口径 · 残缺周期不参与环比</small></h3>
+  <div id="trend" class="chart"></div>
+</div>
+
+<div class="panel">
+  <h3>近 60 天日评论量与差评率 <small>尾部若骤降为报告延迟所致，非真实下降</small></h3>
+  <div id="daily" class="chart"></div>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <h3>设备风险 TOP <small>近全量 · 样本 ≥ 100</small></h3>
+    <table id="device"></table>
+  </div>
+  <div class="panel">
+    <h3>语言市场风险 TOP <small>语言代理，非国家事实</small></h3>
+    <table id="lang"></table>
+  </div>
+</div>
+
+<div class="panel">
+  <h3>版本健康矩阵 <small>按最后出现时间排序 · 样本 ≥ 50</small></h3>
+  <table id="versions"></table>
+</div>
+
+<div class="panel">
+  <h3>主题分布 <small>基于有正文评论的关键词口径</small></h3>
+  <table id="topics"></table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+
+function riskTable(el, rows, label) {
+  if (!rows || !rows.length) { setEmpty(el, '暂无满足样本量下限的数据'); return; }
+  el.innerHTML = '<tr><th>' + label + '</th><th class="num">评论量</th><th class="num">均分</th><th class="num">差评率</th><th style="width:110px"></th></tr>' +
+    rows.map(r => `<tr>
+      <td>${r.value || '(未知)'}</td>
+      <td class="num mono">${r.count}</td>
+      <td class="num mono">${r.avg_rating}</td>
+      <td class="num mono">${fmtPct(r.negative_rate)}</td>
+      <td><div class="bar ${rateClass(r.negative_rate)}"><i style="width:${Math.min(100, r.negative_rate * 400)}%"></i></div></td>
+    </tr>`).join('');
+}
+
+function renderVerdict(s) {
+  const el = document.getElementById('verdictCard');
+  if (!s || !s.ok) {
+    el.className = 'panel verdict muted';
+    el.innerHTML = `<div class="v-text">${(s && s.verdict) || '暂无结论'}</div>`;
+    return;
+  }
+  const tone = s.level === 'warn' ? 'bad' : s.level === 'watch' ? 'warn' : 'ok';
+  const wow = s.wow_delta;
+  const mom = s.mom_delta;
+  const fmtDelta = (d) => d == null ? '—' : (d > 0 ? '+' : '') + (d * 100).toFixed(1) + 'pp';
+  el.className = `panel verdict ${tone}`;
+  el.innerHTML = `
+    <div class="v-badge"><span class="tag ${tone === 'bad' ? 'bad' : tone === 'warn' ? 'warn' : 'ok'}">${
+      tone === 'bad' ? '需关注' : tone === 'warn' ? '留意' : '健康'}</span></div>
+    <div class="v-text">${esc(s.verdict)}</div>
+    <div class="v-refs">
+      <span>较上周 <b class="${wow > 0 ? 'amber' : ''}">${fmtDelta(wow)}</b></span>
+      <span>较上月 <b class="${mom > 0 ? 'amber' : ''}">${fmtDelta(mom)}</b></span>
+      <span>历史分位 <b>${s.percentile == null ? '—' : s.percentile + '%'}</b></span>
+      <span>90 日基线 <b class="mono">${fmtPct(s.baseline.negative_rate)}</b>（阈值 ${fmtPct(s.baseline.threshold)}）</span>
+    </div>`;
+}
+
+async function load() {
+  const [ov, monthly, daily, dev, lang, ver, topics, fresh, rel, sum] = await Promise.all([
+    api('/api/overview'),
+    api('/api/monthly'),
+    api('/api/daily?days=60'),
+    api('/api/dim/device?min_n=100'),
+    api('/api/dim/lang?min_n=200'),
+    api('/api/versions?limit=15'),
+    api('/api/topics'),
+    api('/api/freshness'),
+    api('/api/releases?limit=60'),
+    api('/api/summary'),
+  ]);
+
+  renderVerdict(sum);
+
+  document.getElementById('fresh').innerHTML =
+    `数据截至 <b>${(fresh.last_review || '').slice(0, 10)}</b> ·
+     共 ${ov.total.toLocaleString()} 条评论 ·
+     版本字段覆盖率 ${(fresh.version_coverage * 100).toFixed(0)}% ·
+     正文覆盖率 ${(fresh.text_coverage * 100).toFixed(1)}%
+     ${fresh.truncated_days && fresh.truncated_days.length
+       ? ' · <b style="color:var(--amber)">最近 ' + fresh.truncated_days.length + ' 天数据仍在写入（报告延迟 3–7 天），趋势尾部偏低属正常</b>'
+       : ''}`;
+
+  document.getElementById('cards').innerHTML = `
+    <div class="card"><div class="label">评论总量</div><div class="value">${ov.total.toLocaleString()}</div>
+      <div class="sub">${(ov.first_review || '').slice(0,10)} 起</div></div>
+    <div class="card"><div class="label">平均星级</div><div class="value teal">${ov.avg_rating}</div>
+      <div class="sub">全量口径</div></div>
+    <div class="card"><div class="label">差评率（≤2 星）</div><div class="value ${ov.negative_rate > 0.09 ? 'amber' : 'teal'}">${fmtPct(ov.negative_rate)}</div>
+      <div class="sub">${ov.negative.toLocaleString()} 条</div></div>
+    <div class="card"><div class="label">有正文评论差评率</div><div class="value">${fmtPct(ov.text_negative_rate)}</div>
+      <div class="sub">仅 ${(ov.text_share*100).toFixed(1)}% 评论带正文，此口径偏高约 1.76×</div></div>
+  `;
+
+  const m = monthly.filter(x => x.month >= '2025-01');
+
+  // 发版竖线：按发布月聚合，多条同月只画一条
+  const relMonth = {};
+  rel.forEach(r => {
+    const k = (r.released_at || '').slice(0, 7);
+    if (!k) return;
+    (relMonth[k] = relMonth[k] || []).push((r.version || '').split('_')[0]);
+  });
+  const relMarks = Object.entries(relMonth)
+    .filter(([k]) => k >= '2025-01')
+    .map(([k, vs]) => ({
+      xAxis: k,
+      label: { formatter: vs[vs.length - 1], color: '#9aa7ad', fontSize: 10, rotate: 90, position: 'insideEndTop' },
+      lineStyle: { color: 'rgba(239,159,39,.45)', type: 'dashed', width: 1 },
+    }));
+
+  echarts.init(document.getElementById('trend')).setOption({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis' },
+    grid: { left: 48, right: 24, top: 24, bottom: 48 },
+    xAxis: { type: 'category', data: m.map(x => x.month), axisLabel: { color: '#8b979e', rotate: 45 } },
+    yAxis: { type: 'value', axisLabel: { color: '#8b979e', formatter: v => (v*100).toFixed(0)+'%' } },
+    series: [{
+      type: 'line', data: m.map(x => x.negative_rate), smooth: true,
+      lineStyle: { color: '#1d9e75' }, itemStyle: { color: '#1d9e75' },
+      areaStyle: { color: 'rgba(29,158,117,.14)' },
+      markLine: { silent: true, symbol: 'none', data: [
+        { yAxis: ov.negative_rate,
+          lineStyle: { color: '#8b979e', type: 'dashed' },
+          label: { formatter: '基线', color: '#8b979e' } },
+        ...relMarks
+      ] }
+    }, {
+      type: 'bar', data: m.map(x => x.partial ? x.negative_rate : null),
+      itemStyle: { color: 'rgba(239,159,39,.5)' }, barWidth: '40%', tooltip: { show: false }
+    }]
+  });
+
+  echarts.init(document.getElementById('daily')).setOption({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['评论量', '差评率'], textStyle: { color: '#8b979e' }, top: 0 },
+    grid: { left: 48, right: 48, top: 32, bottom: 48 },
+    xAxis: { type: 'category', data: daily.map(x => x.date.slice(5)), axisLabel: { color: '#8b979e' } },
+    yAxis: [
+      { type: 'value', axisLabel: { color: '#8b979e' } },
+      { type: 'value', axisLabel: { color: '#8b979e', formatter: v => (v*100).toFixed(0)+'%' } }
+    ],
+    series: [
+      { name: '评论量', type: 'bar', data: daily.map(x => x.count), itemStyle: { color: '#2f6f5e' } },
+      { name: '差评率', type: 'line', yAxisIndex: 1, data: daily.map(x => x.negative_rate),
+        smooth: true, lineStyle: { color: '#ef9f27' }, itemStyle: { color: '#ef9f27' } }
+    ]
+  });
+
+  riskTable(document.getElementById('device'), dev.slice(0, 12), '设备');
+  riskTable(document.getElementById('lang'), lang.slice(0, 12), '语言市场');
+
+  const relMap = {};
+  rel.forEach(r => { relMap[r.version] = r; });
+  const verEl = document.getElementById('versions');
+  verEl.innerHTML = ver.length
+    ? '<tr><th>版本</th><th>发布日</th><th class="num">评论量</th><th class="num">均分</th><th class="num">差评率</th><th>末现</th><th style="width:110px"></th></tr>' +
+      ver.map(v => `<tr>
+      <td class="mono">${v.version}</td>
+      <td class="mono">${(relMap[v.version] && relMap[v.version].released_at) || '-'}</td>
+      <td class="num mono">${fmtNum(v.count)}</td>
+      <td class="num mono">${v.avg_rating}</td>
+      <td class="num mono">${fmtPct(v.negative_rate)}</td>
+      <td class="muted mono">${v.last_day}</td>
+      <td><div class="bar ${rateClass(v.negative_rate)}"><i style="width:${Math.min(100, v.negative_rate*400)}%"></i></div></td>
+    </tr>`).join('')
+    : '<tr><td class="muted">暂无满足样本量下限的版本</td></tr>';
+
+  const topicEl = document.getElementById('topics');
+  topicEl.innerHTML = topics.length
+    ? '<tr><th>主题</th><th class="num">提及</th><th class="num">差评提及</th><th class="num">差评占比</th><th style="width:110px"></th></tr>' +
+      topics.map(t => `<tr>
+      <td>${esc(t.topic)}</td>
+      <td class="num mono">${fmtNum(t.mentions)}</td>
+      <td class="num mono">${fmtNum(t.negative_mentions)}</td>
+      <td class="num mono">${fmtPct(t.negative_ratio || 0)}</td>
+      <td><div class="bar ${rateClass(t.negative_ratio || 0)}"><i style="width:${Math.min(100,(t.negative_ratio||0)*200)}%"></i></div></td>
+    </tr>`).join('')
+    : '<tr><td class="muted">暂无主题数据（需先运行分析生成 report.json）</td></tr>';
+}
+guard(load)();
+
+</script>
+{% endblock %}

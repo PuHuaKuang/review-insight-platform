@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}告警中心 · 用户评价观测平台{% endblock %}
+{% block content %}
+<div class="note">
+  所有规则均带<b>样本量下限</b>，且不使用单日指标——日增约 200 条时单日差评率的正常波动区间是 3.4%~6.6%，
+  单日跳变多为噪声。滚动窗口取<b>近 7 个完整日</b>，已自动剔除"报告仍在写入"的尾部。
+</div>
+
+<div class="panel">
+  <h3>规则清单</h3>
+  <table id="rules"></table>
+</div>
+
+<div class="panel">
+  <h3>规则有效性回放 <small>用历史数据验证：事故期应触发，健康期不应触发</small></h3>
+  <button onclick="guard(backtest)()" id="btBtn">运行回放（约 20 秒）</button>
+  <table id="bt" style="margin-top:12px"></table>
+</div>
+
+<div class="panel">
+  <h3>告警事件 <small>
+    <button onclick="guard(runNow)()" style="padding:3px 10px;font-size:12px;margin-left:6px">立即评估</button>
+  </small></h3>
+  <div class="tabs" id="statusTabs">
+    <button class="tab active" data-s="">进行中</button>
+    <button class="tab" data-s="acked">已确认</button>
+    <button class="tab" data-s="muted">已静默</button>
+    <button class="tab" data-s="resolved">已解决</button>
+  </div>
+  <div id="runResult" class="muted" style="margin-bottom:8px"></div>
+  <table id="events"></table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+
+async function loadRules() {
+  setLoading($('rules'), '正在加载规则…');
+  const rules = await api('/api/alerts/rules');
+  document.getElementById('rules').innerHTML =
+    '<tr><th>规则</th><th>名称</th><th>级别</th><th>判定条件</th><th>窗口</th><th class="num">样本下限</th><th>状态</th></tr>' +
+    rules.map(r => `<tr>
+      <td class="mono">${r.code}</td>
+      <td>${r.name}</td>
+      <td><span class="tag ${lvlTag(r.level)}">${r.level}</span></td>
+      <td class="muted">${r.desc}</td>
+      <td class="muted">${r.window}</td>
+      <td class="num mono">${r.min_sample || '—'}</td>
+      <td><span class="tag ${r.enabled ? 'ok' : ''}">${r.enabled ? '启用' : '暂停'}</span></td>
+    </tr>`).join('');
+}
+
+let curStatus = '';
+
+function actionsFor(e) {
+  if (e.status === 'resolved') {
+    return `<span class="muted">${(e.resolved_at || '').slice(0, 16).replace('T', ' ')} 自动解决</span>`;
+  }
+  const btns = [];
+  if (e.status === 'open') {
+    btns.push(`<button class="mini" onclick="guard(doAck)(${e.id})">确认</button>`);
+  }
+  if (e.status !== 'muted') {
+    btns.push(`<button class="mini" onclick="guard(doMute)(${e.id})">静默7天</button>`);
+  }
+  btns.push(`<button class="mini" onclick="guard(doAssign)(${e.id})">${e.assignee ? '改派' : '指派'}</button>`);
+  btns.push(`<button class="mini" onclick="guard(doResolve)(${e.id})">标记解决</button>`);
+  return btns.join(' ');
+}
+
+function statusTag(e) {
+  const map = { open: ['bad', '待处理'], acked: ['warn', '已确认'], muted: ['', '静默中'], resolved: ['ok', '已解决'] };
+  const [cls, label] = map[e.status] || ['', e.status];
+  return `<span class="tag ${cls}">${label}</span>`;
+}
+
+async function loadEvents() {
+  setLoading($('events'), '正在加载事件…');
+  const ev = await api('/api/alerts?' + (curStatus ? 'status=' + curStatus : ''));
+  document.getElementById('events').innerHTML = ev.length
+    ? '<tr><th>状态</th><th>最近</th><th>级别</th><th>规则</th><th>对象</th><th class="num">实际</th><th class="num">阈值</th><th class="num">次数</th><th>证据</th><th>负责人</th><th style="width:220px">操作</th></tr>' +
+      ev.map(e => `<tr>
+        <td>${statusTag(e)}</td>
+        <td class="mono muted">${(e.last_seen_at || e.stat_date || '').slice(0, 16).replace('T', ' ')}</td>
+        <td><span class="tag ${lvlTag(e.level)}">${e.level}</span></td>
+        <td class="mono">${e.code}</td>
+        <td>${esc(e.subject)}</td>
+        <td class="num mono">${e.metric}</td>
+        <td class="num mono">${e.threshold}</td>
+        <td class="num mono">${e.occurrences || 1}</td>
+        <td class="muted">${esc(e.evidence || '')}</td>
+        <td class="muted">${esc(e.assignee || '—')}${e.acked_by ? ` <span class="muted">(确认: ${esc(e.acked_by)})</span>` : ''}</td>
+        <td>${actionsFor(e)}</td>
+      </tr>`).join('')
+    : '<tr><td class="muted">暂无告警事件</td></tr>';
+}
+
+async function doAck(id) {
+  await api(`/api/alerts/${id}/ack`, { method: 'POST' });
+  loadEvents();
+}
+
+async function doMute(id) {
+  await api(`/api/alerts/${id}/mute`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ days: 7 }) });
+  loadEvents();
+}
+
+async function doResolve(id) {
+  await api(`/api/alerts/${id}/resolve`, { method: 'POST' });
+  loadEvents();
+}
+
+async function doAssign(id) {
+  const name = prompt('指派给（填写姓名或账号）：');
+  if (!name) return;
+  await api(`/api/alerts/${id}/assign`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ assignee: name }) });
+  loadEvents();
+}
+
+document.getElementById('statusTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('.tab');
+  if (!btn) return;
+  document.querySelectorAll('#statusTabs .tab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  curStatus = btn.dataset.s;
+  guard(loadEvents)();
+});
+
+async function runNow() {
+  $('runResult').className = 'muted';
+  $('runResult').textContent = '评估中…';
+  const r = await api('/api/alerts/run', { method: 'POST' });
+  document.getElementById('runResult').textContent = `评估完成，触发 ${r.triggered} 条（已按问题去重合并，重复问题不会重复计数为新事件）`;
+  loadEvents();
+}
+
+async function backtest() {
+  const btn = document.getElementById('btBtn');
+  btn.disabled = true; btn.textContent = '回放中…';
+  document.getElementById('bt').innerHTML = '<tr><td class="muted">正在用 5 个历史时点回放…</td></tr>';
+  try {
+  const res = await api('/api/alerts/backtest');
+  document.getElementById('bt').innerHTML =
+    '<tr><th>日期</th><th>场景</th><th class="num">触发数</th><th>结果</th></tr>' +
+    res.map(r => {
+      const e = r.events[0];
+      const detail = e ? `${e.code} 实际 ${(e.metric * 100).toFixed(2)}% > 阈值 ${(e.threshold * 100).toFixed(2)}%（样本 ${e.sample}）` : '未触发';
+      return `<tr>
+        <td class="mono">${r.date}</td>
+        <td>${r.label}</td>
+        <td class="num mono">${r.triggered}</td>
+        <td><span class="tag ${r.triggered ? 'bad' : 'ok'}">${detail}</span></td>
+      </tr>`;
+    }).join('');
+  } finally {
+    btn.disabled = false; btn.textContent = '重新运行回放';
+  }
+}
+
+guard(loadRules)(); guard(loadEvents)();
+
+</script>
+{% endblock %}

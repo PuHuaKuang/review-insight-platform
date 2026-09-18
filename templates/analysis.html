@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}分析工作台 · 用户评价观测平台{% endblock %}
+{% block content %}
+<div class="note">
+  比例类指标请使用监控大盘（全量口径）。本页用于<b>下钻与内容检索</b>，默认只返回带正文的评论。
+</div>
+
+<div class="panel">
+  <form class="filters" id="f" onsubmit="return false;">
+    <div class="field"><label>星级上限</label>
+      <select id="star"><option value="">全部</option><option value="1">≤1 星</option><option value="2" selected>≤2 星</option><option value="3">≤3 星</option><option value="5">全部星级</option></select>
+    </div>
+    <div class="field"><label>版本关键词</label><input id="version" placeholder="如 8.20"></div>
+    <div class="field"><label>设备</label><input id="device" placeholder="如 G10"></div>
+    <div class="field"><label>语言</label><input id="lang" placeholder="如 vi / en / ru" style="width:110px"></div>
+    <div class="field"><label>起始日期</label><input id="since" type="date" style="width:150px"></div>
+    <div class="field"><label>正文关键词</label><input id="kw" placeholder="如 crash / 广告 / lag" style="width:180px"></div>
+    <button onclick="page=0;runLoad()">查询</button>
+    <button onclick="resetAll()" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line)">重置</button>
+    <button onclick="copyLink()" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line)">复制筛选链接</button>
+    <button onclick="exportCsv()" id="exportBtn" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line)">导出 CSV</button>
+  </form>
+  <div class="muted" id="count">—</div>
+  <div class="muted" id="tstatus" style="min-height:18px"></div>
+  <div id="list" style="margin-top:10px"></div>
+  <div class="pager">
+    <button onclick="prev()" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line)">上一页</button>
+    <span id="pinfo"></span>
+    <button onclick="next()" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line)">下一页</button>
+    <button id="translateAllBtn" onclick="translateAll()" style="background:var(--panel-2);color:var(--text);border:1px solid var(--line)">翻译本页全部</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let page = 0, size = 50, total = 0;
+
+const FIELDS = ['star', 'version', 'device', 'lang', 'since', 'kw'];
+const QS_KEY = { star: 'star_max', version: 'version', device: 'device', lang: 'lang', since: 'since', kw: 'keyword' };
+
+/* 筛选条件同步进 URL query，刷新 / 分享链接不丢失筛选状态 */
+function applyFiltersFromUrl() {
+  const p = new URLSearchParams(location.search);
+  FIELDS.forEach(f => {
+    const v = p.get(QS_KEY[f]);
+    if (v !== null) $(f).value = v;
+  });
+  const pg = parseInt(p.get('page') || '0', 10);
+  page = Number.isFinite(pg) && pg >= 0 ? pg : 0;
+}
+
+function syncUrl() {
+  const p = new URLSearchParams();
+  FIELDS.forEach(f => { if ($(f).value) p.set(QS_KEY[f], $(f).value); });
+  if (page) p.set('page', page);
+  const qsStr = p.toString();
+  history.replaceState(null, '', qsStr ? '?' + qsStr : location.pathname);
+}
+
+function qs() {
+  const p = new URLSearchParams();
+  p.set('limit', size); p.set('offset', page * size);
+  if ($('star').value) p.set('star_max', $('star').value);
+  if ($('version').value) p.set('version', $('version').value);
+  if ($('device').value) p.set('device', $('device').value);
+  if ($('lang').value) p.set('lang', $('lang').value);
+  if ($('since').value) p.set('since', $('since').value);
+  if ($('kw').value) p.set('keyword', $('kw').value);
+  return p.toString();
+}
+
+/* 导出用的筛选参数（不含 limit/offset/page） */
+function filterQs() {
+  const p = new URLSearchParams();
+  FIELDS.forEach(f => { if ($(f).value) p.set(QS_KEY[f], $(f).value); });
+  return p.toString();
+}
+
+/* 翻译改为异步：原文先渲染，译文回来后再回填，避免阻塞首屏 */
+let loadSeq = 0;
+let currentItems = [];
+const TRANSLATE_PREVIEW = 10;
+const TRANSLATE_CHUNK = 10;
+
+function renderList(items) {
+  $('list').className = '';
+  $('list').innerHTML = items.length ? items.map((r, i) => `
+    <div class="review">
+      <div class="meta">
+        <span class="stars">${'★'.repeat(r.star)}${'☆'.repeat(5 - r.star)}</span>
+        &nbsp;${r.date} &nbsp;·&nbsp; ${r.lang || '-'} &nbsp;·&nbsp; ${r.device || '未知设备'} &nbsp;·&nbsp;
+        <span class="mono">${r.version || '版本缺失'}</span>
+      </div>
+      <div class="text">${esc(r.text || '')}</div>
+      <div class="text-zh" id="zh-${i}" hidden></div>
+    </div>`).join('') : '<div class="state muted">没有匹配的评论，试试放宽筛选条件</div>';
+}
+
+async function translateRange(from, to, seq) {
+  const slice = currentItems.slice(from, to);
+  if (!slice.length) return;
+  $('tstatus').textContent = `正在翻译第 ${from + 1}–${from + slice.length} 条…`;
+  try {
+    const res = await api('/api/reviews/translations', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: slice.map(r => ({ text: r.text, lang: r.lang })) }),
+    });
+    if (seq !== loadSeq) return;
+    (res.translations || []).forEach(t => {
+      const el = $('zh-' + (from + t.index));
+      if (!el || !t.text_zh) return;
+      el.textContent = '译：' + t.text_zh;
+      el.hidden = false;
+    });
+    $('tstatus').textContent = '';
+  } catch (e) {
+    if (seq !== loadSeq) return;
+    $('tstatus').textContent = '翻译服务暂不可用，已保留原文';
+  }
+}
+
+async function translateAll() {
+  const seq = loadSeq;
+  const btn = $('translateAllBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '翻译中…'; }
+  for (let i = 0; i < currentItems.length; i += TRANSLATE_CHUNK) {
+    await translateRange(i, i + TRANSLATE_CHUNK, seq);
+    if (seq !== loadSeq) return;
+  }
+  if (btn && seq === loadSeq) { btn.disabled = false; btn.textContent = '翻译本页全部'; }
+}
+
+async function load() {
+  syncUrl();
+  setLoading($('list'), '正在查询…');
+  const seq = ++loadSeq;
+  $('tstatus').textContent = '';
+  const btn = $('translateAllBtn');
+  if (btn) { btn.disabled = false; btn.textContent = '翻译本页全部'; }
+  const res = await api('/api/reviews?' + qs());
+  if (seq !== loadSeq) return;
+  total = res.total;
+  currentItems = res.items || [];
+  $('count').textContent = `命中 ${fmtNum(total)} 条`;
+  $('pinfo').textContent = `第 ${page + 1} 页 / 共 ${Math.max(1, Math.ceil(total / size))} 页`;
+  renderList(currentItems);
+  if (currentItems.length) translateRange(0, TRANSLATE_PREVIEW, seq);
+}
+
+const runLoad = guard(load);
+function prev() { if (page > 0) { page--; runLoad(); } }
+function next() { if ((page + 1) * size < total) { page++; runLoad(); } }
+function resetAll() {
+  ['version','device','lang','since','kw'].forEach(i => $(i).value = '');
+  $('star').value = '2'; page = 0; runLoad();
+}
+
+async function copyLink() {
+  const url = location.origin + location.pathname + '?' + filterQs();
+  try {
+    await navigator.clipboard.writeText(url);
+    const btn = event.target;
+    const old = btn.textContent;
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = old; }, 1500);
+  } catch (e) {
+    prompt('复制以下链接：', url);
+  }
+}
+
+function exportCsv() {
+  const q = filterQs();
+  if (total > 20000) {
+    if (!confirm(`当前命中 ${fmtNum(total)} 条，导出上限为 20000 条（按最新时间排序截取前部），是否继续？`)) return;
+  }
+  location.href = '/api/reviews/export' + (q ? '?' + q : '');
+}
+
+applyFiltersFromUrl();
+runLoad();
+</script>
+{% endblock %}

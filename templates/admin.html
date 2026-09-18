@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}数据管理 · 用户评价观测平台{% endblock %}
+{% block content %}
+<div class="note" id="fresh">正在加载…</div>
+
+<div class="cards" id="cards"></div>
+
+<div class="panel">
+  <h3>同步日志 <small>每次采集的条数、状态与错误</small></h3>
+  <table id="sync"></table>
+</div>
+
+<div class="grid2">
+  <div class="panel">
+    <h3>数据来源分布</h3>
+    <table id="src"></table>
+  </div>
+  <div class="panel">
+    <h3>近 14 天日评论量 <small>骤降说明报告仍在写入</small></h3>
+    <table id="recent"></table>
+  </div>
+</div>
+
+<div class="panel">
+  <h3>月度完整性与缺口 <small>残缺月不参与环比</small></h3>
+  <table id="months"></table>
+</div>
+
+<div class="panel">
+  <h3>发版记录 <small>发布日期取自版本名中的构建日期（YYMMDD），比首现日期可靠</small></h3>
+  <table id="rel"></table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function load() {
+  const [fresh, ov, monthly, sync, rel] = await Promise.all([
+    api('/api/freshness'),
+    api('/api/overview'),
+    api('/api/monthly'),
+    api('/api/sync'),
+    api('/api/releases?limit=40'),
+  ]);
+
+  document.getElementById('fresh').innerHTML =
+    `数据截至 <b>${(fresh.last_review || '').slice(0,10)}</b> · 共 ${fresh.total.toLocaleString()} 条`;
+
+  document.getElementById('cards').innerHTML = `
+    <div class="card"><div class="label">版本字段覆盖率</div><div class="value teal">${(fresh.version_coverage*100).toFixed(1)}%</div></div>
+    <div class="card"><div class="label">正文覆盖率</div><div class="value">${(fresh.text_coverage*100).toFixed(1)}%</div>
+      <div class="sub">纯星级评论仍计入趋势</div></div>
+    <div class="card"><div class="label">近 14 天日均</div><div class="value">${fresh.median_daily}</div>
+      <div class="sub">中位数</div></div>
+    <div class="card"><div class="label">尾部待写入</div><div class="value ${fresh.truncated_days && fresh.truncated_days.length ? 'amber' : 'teal'}">${(fresh.truncated_days||[]).length} 天</div>
+      <div class="sub">报告延迟 3–7 天</div></div>`;
+
+  document.getElementById('sync').innerHTML = sync.length
+    ? '<tr><th>#</th><th>来源</th><th>开始</th><th>结束</th><th class="num">读取</th><th class="num">写入</th><th>状态</th></tr>' +
+      sync.map(s => `<tr>
+      <td class="mono">${s.id}</td><td>${s.source}</td>
+      <td class="mono muted">${(s.started_at||'').slice(0,19).replace('T',' ')}</td>
+      <td class="mono muted">${(s.finished_at||'').slice(0,19).replace('T',' ')}</td>
+      <td class="num mono">${fmtNum(s.rows_seen)}</td><td class="num mono">${fmtNum(s.rows_upsert)}</td>
+      <td><span class="tag ${s.status==='ok'?'ok':'bad'}">${s.status}</span></td>
+    </tr>`).join('')
+    : '<tr><td class="muted">暂无同步记录</td></tr>';
+
+  const srcTotal = Object.values(ov.by_source).reduce((a,b)=>a+b,0);
+  document.getElementById('src').innerHTML =
+    '<tr><th>来源</th><th class="num">条数</th><th class="num">占比</th></tr>' +
+    Object.entries(ov.by_source).map(([k,v]) => `<tr><td>${k}</td>
+      <td class="num mono">${v.toLocaleString()}</td>
+      <td class="num mono">${(v/srcTotal*100).toFixed(1)}%</td></tr>`).join('');
+
+  document.getElementById('recent').innerHTML =
+    '<tr><th>日期</th><th class="num">评论量</th><th style="width:120px"></th></tr>' +
+    fresh.recent_daily.map(([d,n]) => `<tr><td class="mono">${d}</td>
+      <td class="num mono">${n}</td>
+      <td><div class="bar ${n < fresh.median_daily*0.5 ? 'warn':''}"><i style="width:${Math.min(100,n/fresh.median_daily*70)}%"></i></div></td></tr>`).join('');
+
+  const m = monthly.filter(x => x.month >= '2025-01').slice().reverse();
+  document.getElementById('months').innerHTML =
+    '<tr><th>月份</th><th class="num">评论量</th><th class="num">覆盖天数</th><th class="num">应有天数</th><th class="num">差评率</th><th>状态</th></tr>' +
+    m.map(x => `<tr>
+      <td class="mono">${x.month}</td>
+      <td class="num mono">${x.count.toLocaleString()}</td>
+      <td class="num mono">${x.covered_days}</td>
+      <td class="num mono">${x.days_in_month}</td>
+      <td class="num mono">${(x.negative_rate*100).toFixed(2)}%</td>
+      <td>${x.partial ? '<span class="tag warn">残缺 · 不参与环比</span>' : '<span class="tag ok">完整</span>'}</td>
+    </tr>`).join('');
+  document.getElementById('rel').innerHTML = rel.length
+    ? '<tr><th>版本</th><th>发布日</th><th class="num">评论量</th><th>数据中首现</th><th>来源</th></tr>' +
+      rel.map(r => `<tr>
+      <td class="mono">${r.version}</td>
+      <td class="mono">${r.released_at}</td>
+      <td class="num mono">${fmtNum(r.review_count)}</td>
+      <td class="mono muted">${r.first_seen || '-'}</td>
+      <td><span class="tag">${r.source}</span></td>
+    </tr>`).join('')
+    : '<tr><td class="muted">暂无发版记录，可运行 python init_releases.py 生成</td></tr>';
+}
+guard(load)();
+</script>
+{% endblock %}
